@@ -87,8 +87,9 @@ def test_email_creds(tmp_path, monkeypatch):
     assert creds.recipients == ("b@gmail.com", "c@gmail.com")
 
 
-def test_email_creds_missing(monkeypatch):
+def test_email_creds_missing(tmp_path, monkeypatch):
     for var in ("GMAIL_SENDER", "GMAIL_APP_PASSWORD", "GMAIL_RECIPIENT"):
         monkeypatch.delenv(var, raising=False)
+    # Point at a nonexistent .env so a real project .env can't leak in.
     with pytest.raises(ConfigError, match="GMAIL_SENDER"):
-        load_email_creds()
+        load_email_creds(env_path=tmp_path / "nonexistent.env")

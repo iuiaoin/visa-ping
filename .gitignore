@@ -1,11 +1,13 @@
 # Secrets
 .env
+config.toml
 
 # Runtime artifacts
 chrome_profile/
 state.json
 logs/
 screenshots/
+.DS_Store
 
 # Python
 __pycache__/

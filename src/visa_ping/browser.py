@@ -14,6 +14,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 import nodriver as uc
+from nodriver import cdp
 
 log = logging.getLogger("visa_ping.browser")
 
@@ -21,15 +22,38 @@ SCHEDULE_URL = "https://www.usvisascheduling.com/zh-CN/schedule/"
 
 
 async def eval_js(page: "uc.Tab", js: str):
-    """Evaluate JS returning a plain Python value (not a CDP RemoteObject)."""
-    return await page.evaluate(js, return_by_value=True)
+    """Evaluate JS returning a plain Python value.
+
+    nodriver's Tab.evaluate(return_by_value=True) leaks the raw RemoteObject
+    when the JS result is falsy (null/false/""/0), and returns an
+    ExceptionDetails object on JS errors — unwrap both here so callers can
+    rely on ordinary Python truthiness.
+    """
+    result = await page.evaluate(js, return_by_value=True)
+    if isinstance(result, cdp.runtime.ExceptionDetails):
+        raise RuntimeError(f"JS evaluation error: {result.text} ({js[:80]}...)")
+    if isinstance(result, cdp.runtime.RemoteObject):
+        return result.value
+    return result
 
 
 class PageState(Enum):
     READY = auto()           # schedule page usable (#post_select present)
     LOGIN_REQUIRED = auto()  # B2C login page or a password field is showing
     WAITING_ROOM = auto()    # site parked us in its high-traffic waiting room
+    BLOCKED = auto()         # Cloudflare WAF block / challenge page
     UNKNOWN = auto()         # nothing recognizable within the timeout
+
+
+# Cloudflare block/challenge fingerprints (visible in title or body text).
+_JS_CF_BLOCKED = """
+(function() {
+  const title = document.title || '';
+  if (title.includes('Attention Required!') || title.includes('Just a moment')) return true;
+  const body = document.body ? (document.body.innerText || '') : '';
+  return body.includes('you have been blocked') || body.includes('Checking your browser');
+})()
+"""
 
 
 class BrowserSession:
@@ -41,14 +65,34 @@ class BrowserSession:
         self.browser: uc.Browser | None = None
         self.page: uc.Tab | None = None
 
-    async def start(self) -> None:
+    async def start(self, attempts: int = 3) -> None:
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._screenshots_dir.mkdir(parents=True, exist_ok=True)
-        cfg = uc.Config()
-        cfg.user_data_dir = str(self._profile_dir)
-        cfg.headless = False  # manual login requires a visible window
-        self.browser = await uc.start(cfg)
-        log.info("Chrome started (profile: %s)", self._profile_dir)
+        # A cold Chrome launch (Gatekeeper verification, first-run init, an
+        # in-flight update) can outlast nodriver's CDP connect window, so
+        # retry a few times before giving up.
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            cfg = uc.Config()
+            cfg.user_data_dir = str(self._profile_dir)
+            cfg.headless = False  # manual login requires a visible window
+            try:
+                self.browser = await uc.start(cfg)
+                log.info("Chrome started (profile: %s)", self._profile_dir)
+                return
+            except Exception as e:
+                last_error = e
+                log.warning(
+                    "Chrome start attempt %d/%d failed: %s", attempt, attempts,
+                    str(e).strip().splitlines()[-1] if str(e).strip() else e,
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(5 * attempt)
+        raise RuntimeError(
+            f"Could not connect to Chrome after {attempts} attempts. "
+            "Check that Google Chrome launches normally by hand, close any "
+            "stray Chrome using the same profile dir, then retry."
+        ) from last_error
 
     async def goto_schedule(self) -> None:
         """Navigate the tab to the schedule page (also serves as refresh)."""
@@ -76,6 +120,9 @@ class BrowserSession:
             url = await self._eval("location.href") or ""
             if "b2clogin.com" in url:
                 return PageState.LOGIN_REQUIRED
+
+            if await self._eval(_JS_CF_BLOCKED):
+                return PageState.BLOCKED
 
             style = await self._eval("document.body && document.body.getAttribute('style')")
             if style and "waiting_room_background" in style:

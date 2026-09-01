@@ -140,6 +140,19 @@ class Notifier:
         body = render_slots_body(added, removed, in_range, all_dates, self._range)
         return self.send(subject, body)
 
+    def blocked(self) -> bool:
+        body = (
+            "usvisascheduling.com is showing a Cloudflare block page "
+            "('Sorry, you have been blocked'). Monitoring is paused and will "
+            "retry with a long backoff.\n\n"
+            "This is usually an IP-level block. Things that help:\n"
+            "  - If you are on a VPN/proxy, switch to a different exit node\n"
+            "    (or try without the VPN — the site serves China directly).\n"
+            "  - Wait; such blocks are often temporary.\n\n"
+            "This alert is sent only once per blocked episode."
+        ) + _footer(self._range)
+        return self.send("blocked by Cloudflare", body)
+
     def session_lost(self) -> bool:
         return self.send("ACTION REQUIRED: session expired", render_session_lost_body(self._range))
 

@@ -21,6 +21,10 @@ from .scraper import diff_dates, filter_in_range, scrape_available_dates, select
 
 log = logging.getLogger("visa_ping.monitor")
 
+# When Cloudflare blocks us, hammering refresh only prolongs the block —
+# back off much longer than for ordinary errors.
+BLOCKED_BACKOFF_SECONDS = 600
+
 
 # --- Persistent state -------------------------------------------------------
 
@@ -122,6 +126,7 @@ class Monitor:
         self._pacer = Pacer(cfg.monitor)
         self._started_at = datetime.now()
         self._cycles = 0
+        self._blocked_alert_sent = False  # once per blocked episode, in-memory
 
     def _save(self) -> None:
         save_state(self._cfg.paths.state_file, self._state)
@@ -141,7 +146,20 @@ class Monitor:
         while True:
             state = await self._session.detect_state()
             if state is PageState.READY:
+                self._blocked_alert_sent = False  # blocked episode is over
                 return
+            if state is PageState.BLOCKED:
+                log.warning(
+                    "Cloudflare block page detected; retrying in %d s "
+                    "(if on a VPN, try switching the exit node)",
+                    BLOCKED_BACKOFF_SECONDS,
+                )
+                if not self._blocked_alert_sent:
+                    self._notifier.blocked()
+                    self._blocked_alert_sent = True
+                await asyncio.sleep(BLOCKED_BACKOFF_SECONDS)
+                await self._session.refresh()
+                continue
             if state is PageState.WAITING_ROOM:
                 log.info(
                     "In the site's waiting room; re-checking in %.0f s",
