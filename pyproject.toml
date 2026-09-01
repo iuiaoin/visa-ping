@@ -18,6 +18,11 @@ visa-ping = "visa_ping.__main__:cli"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# files.pythonhosted.org is unreachable from this network; use the TUNA mirror.
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/visa_ping"]
 
