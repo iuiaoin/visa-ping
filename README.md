@@ -56,6 +56,7 @@ Secrets live in `.env`; behavior lives in `config.toml` (see the comments in
 
 | Key | Meaning |
 |---|---|
+| `scenario` | `"reschedule"` (default): change an existing appointment; `"schedule"`: book a brand-new one |
 | `[consulate] name` | Substring matched against the consulate dropdown (e.g. `"SHANGHAI"`); use `guid` for an exact match |
 | `[dates] earliest` / `latest` | Only slots inside this inclusive range trigger alerts/booking |
 | `[monitor] months_to_scan` | How many calendar months to scan per check |
@@ -71,10 +72,16 @@ uv run visa-ping              # continuous monitoring
 uv run visa-ping --once       # one supervised check cycle, then exit
 ```
 
-First run: Chrome opens on the schedule page → log in manually (username,
-password, captcha, security questions) → monitoring starts automatically once
-the schedule page is detected. The Chrome profile is stored in `chrome_profile/`,
-so subsequent runs usually skip the login entirely.
+First run: Chrome opens on the **home page** (deep-linking to `/schedule/`
+without a session trips the Cloudflare WAF) → log in manually (username,
+password, captcha, security questions) → once a logged-in session is detected
+the program navigates to the schedule/reschedule page itself and monitoring
+starts. The Chrome profile is stored in `chrome_profile/`, so subsequent runs
+usually skip the login entirely.
+
+If the program keeps printing "Waiting for manual login" even though you have
+logged in, just open the schedule page manually in that same tab — it detects
+the ready page directly and proceeds.
 
 ### What the emails mean
 

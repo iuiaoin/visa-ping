@@ -18,7 +18,17 @@ from nodriver import cdp
 
 log = logging.getLogger("visa_ping.browser")
 
+# Deep-linking to the schedule page WITHOUT a logged-in session trips the
+# Cloudflare WAF ("Sorry, you have been blocked"), while the home page loads
+# fine — so the flow is: home page -> human logs in -> then navigate to the
+# schedule/reschedule page.
+HOME_URL = "https://www.usvisascheduling.com/"
 SCHEDULE_URL = "https://www.usvisascheduling.com/zh-CN/schedule/"
+RESCHEDULE_URL = "https://www.usvisascheduling.com/zh-CN/schedule/?reschedule=true"
+
+
+def target_url_for(scenario: str) -> str:
+    return SCHEDULE_URL if scenario == "schedule" else RESCHEDULE_URL
 
 
 async def eval_js(page: "uc.Tab", js: str):
@@ -56,12 +66,22 @@ _JS_CF_BLOCKED = """
 """
 
 
+# Heuristic for "logged in": a sign-out/log-off link in the page chrome
+# (Power Pages portals render one once authenticated).
+_JS_LOGGED_IN = """
+!!document.querySelector(
+  "a[href*='signout' i], a[href*='sign-out' i], a[href*='logout' i], a[href*='logoff' i]"
+)
+"""
+
+
 class BrowserSession:
     """Owns the Chrome instance and the single tab used for everything."""
 
-    def __init__(self, profile_dir: Path, screenshots_dir: Path):
+    def __init__(self, profile_dir: Path, screenshots_dir: Path, target_url: str = RESCHEDULE_URL):
         self._profile_dir = profile_dir
         self._screenshots_dir = screenshots_dir
+        self._target_url = target_url
         self.browser: uc.Browser | None = None
         self.page: uc.Tab | None = None
 
@@ -94,16 +114,29 @@ class BrowserSession:
             "stray Chrome using the same profile dir, then retry."
         ) from last_error
 
-    async def goto_schedule(self) -> None:
-        """Navigate the tab to the schedule page (also serves as refresh)."""
+    async def _goto(self, url: str) -> None:
         if self.page is None:
-            self.page = await self.browser.get(SCHEDULE_URL)
+            self.page = await self.browser.get(url)
         else:
-            await self.page.get(SCHEDULE_URL)
-        await asyncio.sleep(2)  # let the initial navigation settle
+            await self.page.get(url)
+        await asyncio.sleep(2)  # let the navigation settle
+
+    async def goto_home(self) -> None:
+        """Open the site home page (safe to load without a session)."""
+        await self._goto(HOME_URL)
+
+    async def goto_schedule(self) -> None:
+        """Navigate to the schedule/reschedule page. Only do this once a
+        logged-in session exists — a session-less deep link gets WAF-blocked."""
+        await self._goto(self._target_url)
 
     async def refresh(self) -> None:
         await self.goto_schedule()
+
+    async def is_logged_in(self) -> bool:
+        """Best-effort check for an authenticated portal session on the
+        CURRENT page (any page of the site, home included)."""
+        return bool(await self._eval(_JS_LOGGED_IN))
 
     async def _eval(self, js: str):
         """Evaluate JS in the page, returning None on any CDP hiccup."""
@@ -187,6 +220,13 @@ class ManualLoginStrategy(LoginStrategy):
             # No refresh here: reloading could interrupt the human mid-login.
             state = await session.detect_state(timeout=5)
             if state is PageState.READY:
-                log.info("Login detected — session recovered.")
+                log.info("Schedule page ready — session recovered.")
                 return True
+            # The human may have finished logging in while the tab sits on
+            # the home (or any other) page — hop to the schedule page then.
+            # Never navigate while the B2C login form is showing.
+            if state is not PageState.LOGIN_REQUIRED and await session.is_logged_in():
+                log.info("Login detected — navigating to the schedule page...")
+                await session.goto_schedule()
+                continue
             await asyncio.sleep(self._poll_seconds)

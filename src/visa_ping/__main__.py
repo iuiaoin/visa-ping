@@ -36,6 +36,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _banner(cfg: Config, log) -> None:
     log.info("=" * 60)
     log.info("visa-ping effective configuration:")
+    log.info("  scenario  : %s", cfg.scenario)
     log.info("  consulate : %s", cfg.consulate.guid or cfg.consulate.name)
     log.info("  date range: %s .. %s", cfg.dates.earliest, cfg.dates.latest)
     log.info("  months    : %d", cfg.monitor.months_to_scan)
@@ -57,21 +58,22 @@ def _test_email(cfg: Config, creds: EmailCreds) -> int:
 
 
 async def _async_main(cfg: Config, creds: EmailCreds, once: bool) -> None:
-    from .browser import BrowserSession, ManualLoginStrategy
+    from .browser import BrowserSession, ManualLoginStrategy, target_url_for
     from .monitor import Monitor
     from .notify import Notifier
 
     label = cfg.consulate.name or cfg.consulate.guid or "?"
     notifier = Notifier(creds, label, cfg.dates)
-    session = BrowserSession(cfg.paths.profile_dir, cfg.paths.screenshots_dir)
+    session = BrowserSession(
+        cfg.paths.profile_dir, cfg.paths.screenshots_dir, target_url_for(cfg.scenario)
+    )
     login = ManualLoginStrategy(cfg.monitor.session_poll_seconds)
     monitor = Monitor(session, notifier, login, cfg)
 
     await session.start()
     try:
         if once:
-            await session.goto_schedule()
-            await monitor.wait_until_ready(startup=True)
+            await monitor.startup()
             await monitor.run_cycle()
         else:
             await monitor.run()

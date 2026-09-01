@@ -30,8 +30,19 @@ def test_valid_config_with_defaults(tmp_path):
     assert cfg.booking.enabled is False
     assert cfg.booking.dry_run is True
     assert cfg.monitor.months_to_scan == 3
+    assert cfg.scenario == "reschedule"  # default
     # relative paths resolve against the config file's directory
     assert cfg.paths.state_file == tmp_path / "state.json"
+
+
+def test_scenario_schedule(tmp_path):
+    cfg = load_config(write(tmp_path, 'scenario = "schedule"\n' + VALID))
+    assert cfg.scenario == "schedule"
+
+
+def test_scenario_invalid(tmp_path):
+    with pytest.raises(ConfigError, match="scenario"):
+        load_config(write(tmp_path, 'scenario = "bogus"\n' + VALID))
 
 
 def test_missing_file(tmp_path):

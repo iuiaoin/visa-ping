@@ -158,7 +158,11 @@ class Monitor:
                     self._notifier.blocked()
                     self._blocked_alert_sent = True
                 await asyncio.sleep(BLOCKED_BACKOFF_SECONDS)
-                await self._session.refresh()
+                # Re-enter through the home page (deep links are what the
+                # WAF blocks); hop to the schedule page only if logged in.
+                await self._session.goto_home()
+                if await self._session.is_logged_in():
+                    await self._session.goto_schedule()
                 continue
             if state is PageState.WAITING_ROOM:
                 log.info(
@@ -170,11 +174,7 @@ class Monitor:
             if state is PageState.LOGIN_REQUIRED:
                 if startup:
                     # Expected on first run: instructions on console, no email.
-                    log.info(
-                        "LOGIN REQUIRED: please log in manually in the Chrome "
-                        "window (captcha + security questions). Monitoring "
-                        "starts automatically afterwards."
-                    )
+                    self._log_login_instructions()
                     await self._login.recover(self._session)
                 else:
                     await self._handle_session_lost()
@@ -183,6 +183,27 @@ class Monitor:
             log.warning("Page state UNKNOWN; reloading after backoff")
             await asyncio.sleep(self._cfg.monitor.error_backoff_seconds)
             await self._session.refresh()
+
+    @staticmethod
+    def _log_login_instructions() -> None:
+        log.info(
+            "LOGIN REQUIRED: please log in manually in the Chrome window "
+            "(captcha + security questions). Monitoring starts automatically "
+            "afterwards."
+        )
+
+    async def startup(self) -> None:
+        """Enter the site the way a human does: home page first, then the
+        schedule page only once a logged-in session exists (a session-less
+        deep link to /schedule/ gets blocked by the Cloudflare WAF)."""
+        await self._session.goto_home()
+        if await self._session.is_logged_in():
+            log.info("Existing session detected on the home page.")
+            await self._session.goto_schedule()
+        else:
+            self._log_login_instructions()
+            await self._login.recover(self._session)
+        await self.wait_until_ready(startup=True)
 
     def _heartbeat_due(self) -> bool:
         if not self._cfg.monitor.heartbeat_enabled:
@@ -240,8 +261,7 @@ class Monitor:
             self._cfg.dates.earliest, self._cfg.dates.latest,
             self._cfg.booking.enabled, self._cfg.booking.dry_run,
         )
-        await self._session.goto_schedule()
-        await self.wait_until_ready(startup=True)
+        await self.startup()
 
         while True:
             try:

@@ -78,6 +78,9 @@ class Config:
     monitor: MonitorCfg
     booking: BookingCfg
     paths: PathsCfg
+    # "reschedule": change an existing appointment (default);
+    # "schedule": book a brand-new appointment.
+    scenario: str = "reschedule"
 
 
 def load_email_creds(env_path: Path | None = None) -> EmailCreds:
@@ -130,6 +133,10 @@ def load_config(config_path: Path) -> Config:
 
     errors: list[str] = []
     base_dir = config_path.resolve().parent
+
+    scenario = raw.get("scenario", "reschedule")
+    if scenario not in ("schedule", "reschedule"):
+        errors.append(f"scenario must be 'schedule' or 'reschedule', got: {scenario!r}")
 
     consulate_raw = raw.get("consulate", {})
     consulate = ConsulateCfg(
@@ -194,7 +201,10 @@ def load_config(config_path: Path) -> Config:
     if errors:
         raise ConfigError(f"Invalid configuration in {config_path}:\n- " + "\n- ".join(errors))
 
-    return Config(consulate=consulate, dates=dates, monitor=monitor, booking=booking, paths=paths)
+    return Config(
+        consulate=consulate, dates=dates, monitor=monitor, booking=booking,
+        paths=paths, scenario=scenario,
+    )
 
 
 def setup_logging(log_file: Path) -> logging.Logger:

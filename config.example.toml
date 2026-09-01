@@ -1,6 +1,10 @@
 # visa-ping behavior configuration.
 # Copy to config.toml and edit. Secrets go in .env, never here.
 
+# "reschedule" (default): change an existing appointment (/schedule/?reschedule=true)
+# "schedule":  book a brand-new appointment (/schedule/)
+scenario = "reschedule"
+
 [consulate]
 # Case-insensitive substring matched against the option text of the consulate
 # dropdown on the schedule page (e.g. "SHANGHAI", "GUANGZHOU", "BEIJING").
