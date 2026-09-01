@@ -1,0 +1,52 @@
+# visa-ping behavior configuration.
+# Copy to config.toml and edit. Secrets go in .env, never here.
+
+[consulate]
+# Case-insensitive substring matched against the option text of the consulate
+# dropdown on the schedule page (e.g. "SHANGHAI", "GUANGZHOU", "BEIJING").
+name = "SHANGHAI"
+# Optional: exact option GUID; takes precedence over `name` when set.
+# Known GUIDs: SHANGHAI=096bf614-b0db-ec11-a7b4-001dd80234f6
+#              WUHAN=7b6af614-b0db-ec11-a7b4-001dd80234f6
+#              SHENYANG=0f6bf614-b0db-ec11-a7b4-001dd80234f6
+# guid = "096bf614-b0db-ec11-a7b4-001dd80234f6"
+
+[dates]
+# Only slots within [earliest, latest] (inclusive) trigger alerts / booking.
+earliest = 2026-09-15
+latest = 2026-12-31
+
+[monitor]
+# How many calendar months to scan each cycle (current month + next arrows).
+months_to_scan = 3
+# Randomized wait between checks (anti-bot: never a fixed period).
+check_interval_min_seconds = 180
+check_interval_max_seconds = 300
+# After a random number of checks, take a longer randomized rest.
+rest_min_seconds = 420
+rest_max_seconds = 540
+checks_before_rest_min = 4
+checks_before_rest_max = 7
+# Wait after an unexpected error before the next cycle.
+error_backoff_seconds = 60
+# How often to re-check the page while waiting for a human to log in.
+session_poll_seconds = 30
+# How often to re-check while the site has us parked in its waiting room.
+waiting_room_poll_seconds = 20
+# Optional periodic "I'm alive" email.
+heartbeat_enabled = false
+heartbeat_interval_hours = 6
+
+[booking]
+# Master switch for auto-booking. Default OFF: monitor + notify only.
+enabled = false
+# Even when enabled, dry_run = true performs every step EXCEPT the final
+# submit click. Set to false only after a successful dry run.
+dry_run = true
+
+[paths]
+# Relative paths are resolved against this config file's directory.
+profile_dir = "chrome_profile"
+state_file = "state.json"
+log_file = "logs/visa-ping.log"
+screenshots_dir = "screenshots"

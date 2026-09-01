@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Runtime artifacts
+chrome_profile/
+state.json
+logs/
+screenshots/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+uv.lock
