@@ -24,7 +24,7 @@ SMTP_PORT = 465
 
 def _footer(date_range: DateRangeCfg) -> str:
     return (
-        f"\n--\nvisa-ping | configured range: {date_range.earliest} .. {date_range.latest}"
+        f"\n--\nvisa-ping | configured range: {date_range.describe()}"
         f" | sent at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
     )
 

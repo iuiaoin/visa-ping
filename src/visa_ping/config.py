@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tomllib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -36,9 +37,41 @@ class ConsulateCfg:
 
 
 @dataclass(frozen=True)
+class DateBound:
+    """A range bound: either a fixed date or an offset from 'today'.
+
+    Relative bounds are resolved at USE time, not load time — a monitor
+    running for days must keep honoring "at least N days from now".
+    """
+
+    fixed: date | None = None
+    offset_days: int | None = None
+
+    def resolve(self, today: date | None = None) -> date:
+        if self.fixed is not None:
+            return self.fixed
+        return (today or date.today()) + timedelta(days=self.offset_days)
+
+    def describe(self, today: date | None = None) -> str:
+        if self.fixed is not None:
+            return self.fixed.isoformat()
+        return f"today+{self.offset_days} ({self.resolve(today).isoformat()})"
+
+
+@dataclass(frozen=True)
 class DateRangeCfg:
-    earliest: date
-    latest: date
+    earliest: DateBound
+    latest: DateBound
+
+    @classmethod
+    def from_dates(cls, earliest: date, latest: date) -> "DateRangeCfg":
+        return cls(DateBound(fixed=earliest), DateBound(fixed=latest))
+
+    def resolve(self, today: date | None = None) -> tuple[date, date]:
+        return self.earliest.resolve(today), self.latest.resolve(today)
+
+    def describe(self, today: date | None = None) -> str:
+        return f"{self.earliest.describe(today)} .. {self.latest.describe(today)}"
 
 
 @dataclass(frozen=True)
@@ -109,16 +142,26 @@ def load_email_creds(env_path: Path | None = None) -> EmailCreds:
     return EmailCreds(sender=sender, app_password=password, recipients=recipients)
 
 
-def _as_date(value: object, key: str, errors: list[str]) -> date:
+# "today" or "today+N" (case-insensitive, spaces allowed around '+')
+_RELATIVE_DATE_RE = re.compile(r"^\s*today\s*(?:\+\s*(\d+)\s*)?$", re.IGNORECASE)
+
+
+def _as_bound(value: object, key: str, errors: list[str]) -> DateBound:
     if isinstance(value, date):
-        return value
+        return DateBound(fixed=value)
     if isinstance(value, str):
+        m = _RELATIVE_DATE_RE.match(value)
+        if m:
+            return DateBound(offset_days=int(m.group(1) or 0))
         try:
-            return date.fromisoformat(value)
+            return DateBound(fixed=date.fromisoformat(value.strip()))
         except ValueError:
             pass
-    errors.append(f"[dates] {key} must be a date (YYYY-MM-DD), got: {value!r}")
-    return date.today()  # placeholder; errors will abort anyway
+    errors.append(
+        f"[dates] {key} must be a date (YYYY-MM-DD) or relative "
+        f"(\"today\", \"today+N\"), got: {value!r}"
+    )
+    return DateBound(fixed=date.today())  # placeholder; errors will abort anyway
 
 
 def load_config(config_path: Path) -> Config:
@@ -152,15 +195,21 @@ def load_config(config_path: Path) -> Config:
     dates_raw = raw.get("dates", {})
     if "earliest" not in dates_raw or "latest" not in dates_raw:
         errors.append("[dates] requires both `earliest` and `latest`")
-        dates = DateRangeCfg(date.today(), date.today())
+        dates = DateRangeCfg.from_dates(date.today(), date.today())
     else:
-        earliest = _as_date(dates_raw["earliest"], "earliest", errors)
-        latest = _as_date(dates_raw["latest"], "latest", errors)
+        earliest = _as_bound(dates_raw["earliest"], "earliest", errors)
+        latest = _as_bound(dates_raw["latest"], "latest", errors)
         dates = DateRangeCfg(earliest=earliest, latest=latest)
-        if earliest > latest:
-            errors.append(f"[dates] earliest ({earliest}) is after latest ({latest})")
-        if latest < date.today():
-            errors.append(f"[dates] latest ({latest}) is in the past")
+        # Sanity-check the range as resolved today; relative bounds shift
+        # together over time so this ordering stays representative.
+        earliest_r, latest_r = dates.resolve()
+        if earliest_r > latest_r:
+            errors.append(
+                f"[dates] earliest ({dates.earliest.describe()}) is after "
+                f"latest ({dates.latest.describe()})"
+            )
+        if latest.fixed is not None and latest.fixed < date.today():
+            errors.append(f"[dates] latest ({latest.fixed}) is in the past")
 
     monitor_raw = raw.get("monitor", {})
     try:

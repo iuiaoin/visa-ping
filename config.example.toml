@@ -17,7 +17,11 @@ name = "SHANGHAI"
 
 [dates]
 # Only slots within [earliest, latest] (inclusive) trigger alerts / booking.
-earliest = 2026-09-15
+# Each bound is either a fixed date (2026-09-15) or relative to today:
+# "today" or "today+N" (quoted string). Relative bounds are re-resolved
+# every check cycle, so "today+5" always means "at least 5 days from now"
+# no matter how long the monitor has been running.
+earliest = "today+5"
 latest = 2026-12-31
 
 [monitor]

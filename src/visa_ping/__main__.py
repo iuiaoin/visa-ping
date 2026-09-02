@@ -38,7 +38,7 @@ def _banner(cfg: Config, log) -> None:
     log.info("visa-ping effective configuration:")
     log.info("  scenario  : %s", cfg.scenario)
     log.info("  consulate : %s", cfg.consulate.guid or cfg.consulate.name)
-    log.info("  date range: %s .. %s", cfg.dates.earliest, cfg.dates.latest)
+    log.info("  date range: %s", cfg.dates.describe())
     log.info("  months    : %d", cfg.monitor.months_to_scan)
     log.info("  booking   : %s", "ENABLED" if cfg.booking.enabled else "disabled")
     if cfg.booking.enabled:

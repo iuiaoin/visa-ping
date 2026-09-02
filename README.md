@@ -58,7 +58,7 @@ Secrets live in `.env`; behavior lives in `config.toml` (see the comments in
 |---|---|
 | `scenario` | `"reschedule"` (default): change an existing appointment; `"schedule"`: book a brand-new one |
 | `[consulate] name` | Substring matched against the consulate dropdown (e.g. `"SHANGHAI"`); use `guid` for an exact match |
-| `[dates] earliest` / `latest` | Only slots inside this inclusive range trigger alerts/booking |
+| `[dates] earliest` / `latest` | Only slots inside this inclusive range trigger alerts/booking. Fixed (`2026-09-15`) or relative (`"today+5"`, re-resolved every cycle) |
 | `[monitor] months_to_scan` | How many calendar months to scan per check |
 | `[monitor] check_interval_*` / `rest_*` | Randomized anti-bot pacing (seconds) |
 | `[monitor] heartbeat_enabled` | Optional periodic "still alive" email |

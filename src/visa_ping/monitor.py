@@ -229,11 +229,14 @@ class Monitor:
         all_dates = await scrape_available_dates(
             self._session.page, self._cfg.monitor.months_to_scan
         )
-        in_range = filter_in_range(all_dates, self._cfg.dates.earliest, self._cfg.dates.latest)
+        # Resolve per cycle: relative bounds like "today+5" must track the
+        # current date over a long-running monitor.
+        earliest, latest = self._cfg.dates.resolve()
+        in_range = filter_in_range(all_dates, earliest, latest)
         added, removed = diff_dates(self._state.known_dates, in_range)
         log.info(
-            "Cycle result: %d visible, %d in range (+%d / -%d)",
-            len(all_dates), len(in_range), len(added), len(removed),
+            "Cycle result: %d visible, %d in range %s..%s (+%d / -%d)",
+            len(all_dates), len(in_range), earliest, latest, len(added), len(removed),
         )
 
         if added or removed:
@@ -262,9 +265,9 @@ class Monitor:
 
     async def run(self) -> None:
         log.info(
-            "Starting monitor: consulate=%s range=%s..%s booking=%s dry_run=%s",
+            "Starting monitor: consulate=%s range=%s booking=%s dry_run=%s",
             self._cfg.consulate.guid or self._cfg.consulate.name,
-            self._cfg.dates.earliest, self._cfg.dates.latest,
+            self._cfg.dates.describe(),
             self._cfg.booking.enabled, self._cfg.booking.dry_run,
         )
         await self.startup()

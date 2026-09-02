@@ -6,7 +6,7 @@ from visa_ping.config import DateRangeCfg, EmailCreds
 from visa_ping.notify import Notifier, render_slots_body
 
 
-RANGE = DateRangeCfg(earliest=date(2026, 9, 15), latest=date(2026, 12, 31))
+RANGE = DateRangeCfg.from_dates(date(2026, 9, 15), date(2026, 12, 31))
 CREDS = EmailCreds(sender="a@gmail.com", app_password="pw", recipients=("b@gmail.com",))
 
 

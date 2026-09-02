@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from visa_ping.config import ConfigError, load_config, load_email_creds
+from visa_ping.config import ConfigError, DateBound, load_config, load_email_creds
 
 FUTURE = (date.today() + timedelta(days=200)).isoformat()
 NEAR = (date.today() + timedelta(days=30)).isoformat()
@@ -76,6 +76,69 @@ latest = 2020-06-01
 """
     with pytest.raises(ConfigError, match="in the past"):
         load_config(write(tmp_path, bad))
+
+
+def test_relative_dates(tmp_path):
+    cfg_text = """
+[consulate]
+name = "SHANGHAI"
+[dates]
+earliest = "today+5"
+latest = "today + 90"
+"""
+    cfg = load_config(write(tmp_path, cfg_text))
+    today = date.today()
+    earliest, latest = cfg.dates.resolve(today)
+    assert earliest == today + timedelta(days=5)
+    assert latest == today + timedelta(days=90)
+    assert cfg.dates.earliest.describe(today).startswith("today+5 (")
+
+
+def test_relative_bare_today_and_mixed(tmp_path):
+    cfg_text = f"""
+[consulate]
+name = "SHANGHAI"
+[dates]
+earliest = "today"
+latest = {FUTURE}
+"""
+    cfg = load_config(write(tmp_path, cfg_text))
+    today = date.today()
+    earliest, latest = cfg.dates.resolve(today)
+    assert earliest == today
+    assert latest == date.fromisoformat(FUTURE)
+
+
+def test_relative_resolution_tracks_today():
+    bound = DateBound(offset_days=5)
+    d1 = date(2026, 9, 1)
+    d2 = date(2026, 9, 10)
+    assert bound.resolve(d1) == date(2026, 9, 6)
+    assert bound.resolve(d2) == date(2026, 9, 15)  # re-resolves, no caching
+
+
+def test_relative_invalid_string(tmp_path):
+    cfg_text = """
+[consulate]
+name = "SHANGHAI"
+[dates]
+earliest = "yesterday+5"
+latest = "today+90"
+"""
+    with pytest.raises(ConfigError, match="today"):
+        load_config(write(tmp_path, cfg_text))
+
+
+def test_relative_earliest_after_fixed_latest(tmp_path):
+    cfg_text = f"""
+[consulate]
+name = "SHANGHAI"
+[dates]
+earliest = "today+400"
+latest = {FUTURE}
+"""
+    with pytest.raises(ConfigError, match="is after"):
+        load_config(write(tmp_path, cfg_text))
 
 
 def test_bad_interval_ordering(tmp_path):
