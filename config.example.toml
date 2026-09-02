@@ -37,6 +37,9 @@ error_backoff_seconds = 60
 session_poll_seconds = 30
 # How often to re-check while the site has us parked in its waiting room.
 waiting_room_poll_seconds = 20
+# Minimum spacing between page loads we trigger. The site rate-limits over
+# a ~30 s window (Cloudflare error 1015) — keep this above 30.
+nav_min_interval_seconds = 35
 # Optional periodic "I'm alive" email.
 heartbeat_enabled = false
 heartbeat_interval_hours = 6

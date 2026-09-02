@@ -134,6 +134,11 @@ intervals — never a tight loop):
 
 - **"No consulate option matches ..."** — the error lists every dropdown option;
   copy the exact GUID into `[consulate] guid`.
+- **Cloudflare Error 1015 (rate limited)** — the site rate-limits page loads
+  over a ~30 s window. The monitor spaces its own page loads at least
+  `nav_min_interval_seconds` (35 s) apart and backs off 10 minutes when it
+  sees the block page; just let it wait. Avoid manually refreshing the
+  monitored tab in quick succession.
 - **Stuck in waiting room** — the site is queueing everyone; the monitor polls
   until it passes. Nothing to do.
 - **Emails not arriving** — run `--test-email`; check `logs/visa-ping.log`.

@@ -214,9 +214,15 @@ class Monitor:
         elapsed_h = (datetime.now() - last).total_seconds() / 3600
         return elapsed_h >= self._cfg.monitor.heartbeat_interval_hours
 
-    async def run_cycle(self) -> bool:
-        """One monitoring cycle. Returns True when the monitor should stop."""
-        await self._session.refresh()
+    async def run_cycle(self, refresh: bool = True) -> bool:
+        """One monitoring cycle. Returns True when the monitor should stop.
+
+        Pass refresh=False right after startup(): the page is already freshly
+        loaded, and an immediate second load would trip the site's ~30 s
+        rate limit (Cloudflare 1015).
+        """
+        if refresh:
+            await self._session.refresh()
         await self.wait_until_ready(startup=False)
 
         _, label = await select_consulate(self._session.page, self._cfg.consulate)
@@ -263,9 +269,11 @@ class Monitor:
         )
         await self.startup()
 
+        first_cycle = True
         while True:
             try:
-                done = await self.run_cycle()
+                done = await self.run_cycle(refresh=not first_cycle)
+                first_cycle = False
                 self._cycles += 1
                 if done:
                     break

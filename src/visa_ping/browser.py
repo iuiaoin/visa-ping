@@ -55,13 +55,18 @@ class PageState(Enum):
     UNKNOWN = auto()         # nothing recognizable within the timeout
 
 
-# Cloudflare block/challenge fingerprints (visible in title or body text).
+# Cloudflare block/challenge/rate-limit fingerprints (title or body text).
+# Error 1015 ("You are being rate limited") is common here: the site rate-
+# limits page loads over roughly a 30-second window.
 _JS_CF_BLOCKED = """
 (function() {
   const title = document.title || '';
   if (title.includes('Attention Required!') || title.includes('Just a moment')) return true;
   const body = document.body ? (document.body.innerText || '') : '';
-  return body.includes('you have been blocked') || body.includes('Checking your browser');
+  return body.includes('you have been blocked')
+      || body.includes('Checking your browser')
+      || body.includes('Error 1015')
+      || body.includes('being rate limited');
 })()
 """
 
@@ -78,10 +83,20 @@ _JS_LOGGED_IN = """
 class BrowserSession:
     """Owns the Chrome instance and the single tab used for everything."""
 
-    def __init__(self, profile_dir: Path, screenshots_dir: Path, target_url: str = RESCHEDULE_URL):
+    def __init__(
+        self,
+        profile_dir: Path,
+        screenshots_dir: Path,
+        target_url: str = RESCHEDULE_URL,
+        nav_min_interval: float = 35.0,
+    ):
         self._profile_dir = profile_dir
         self._screenshots_dir = screenshots_dir
         self._target_url = target_url
+        # The site rate-limits page loads (~30 s window -> Cloudflare 1015);
+        # never issue two programmatic navigations closer than this.
+        self._nav_min_interval = nav_min_interval
+        self._last_nav: float | None = None
         self.browser: uc.Browser | None = None
         self.page: uc.Tab | None = None
 
@@ -115,10 +130,18 @@ class BrowserSession:
         ) from last_error
 
     async def _goto(self, url: str) -> None:
+        # Global navigation throttle (see nav_min_interval above).
+        now = asyncio.get_running_loop().time()
+        if self._last_nav is not None:
+            wait = self._last_nav + self._nav_min_interval - now
+            if wait > 0:
+                log.info("Rate-limit guard: waiting %.0f s before next page load", wait)
+                await asyncio.sleep(wait)
         if self.page is None:
             self.page = await self.browser.get(url)
         else:
             await self.page.get(url)
+        self._last_nav = asyncio.get_running_loop().time()
         await asyncio.sleep(2)  # let the navigation settle
 
     async def goto_home(self) -> None:

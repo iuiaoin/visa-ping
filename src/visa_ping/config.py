@@ -53,6 +53,9 @@ class MonitorCfg:
     error_backoff_seconds: float = 60
     session_poll_seconds: float = 30
     waiting_room_poll_seconds: float = 20
+    # Minimum spacing between our page loads; the site rate-limits over a
+    # ~30 s window (Cloudflare error 1015), so stay above that.
+    nav_min_interval_seconds: float = 35
     heartbeat_enabled: bool = False
     heartbeat_interval_hours: float = 6
 
@@ -177,6 +180,8 @@ def load_config(config_path: Path) -> Config:
             errors.append(f"[monitor] {lo_key} ({lo}) > {hi_key} ({hi})")
         if lo <= 0:
             errors.append(f"[monitor] {lo_key} must be > 0")
+    if monitor.nav_min_interval_seconds <= 0:
+        errors.append("[monitor] nav_min_interval_seconds must be > 0")
 
     booking_raw = raw.get("booking", {})
     try:

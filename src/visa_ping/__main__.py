@@ -65,7 +65,10 @@ async def _async_main(cfg: Config, creds: EmailCreds, once: bool) -> None:
     label = cfg.consulate.name or cfg.consulate.guid or "?"
     notifier = Notifier(creds, label, cfg.dates)
     session = BrowserSession(
-        cfg.paths.profile_dir, cfg.paths.screenshots_dir, target_url_for(cfg.scenario)
+        cfg.paths.profile_dir,
+        cfg.paths.screenshots_dir,
+        target_url_for(cfg.scenario),
+        nav_min_interval=cfg.monitor.nav_min_interval_seconds,
     )
     login = ManualLoginStrategy(cfg.monitor.session_poll_seconds)
     monitor = Monitor(session, notifier, login, cfg)
@@ -74,7 +77,7 @@ async def _async_main(cfg: Config, creds: EmailCreds, once: bool) -> None:
     try:
         if once:
             await monitor.startup()
-            await monitor.run_cycle()
+            await monitor.run_cycle(refresh=False)
         else:
             await monitor.run()
     finally:

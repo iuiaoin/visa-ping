@@ -156,8 +156,9 @@ async def click_next_month(page) -> bool:
     if state != "enabled":
         return False
     await eval_js(page, _JS_CLICK_NEXT)
-    # Short randomized pause for the calendar to re-render (it may fetch).
-    await asyncio.sleep(random.uniform(1.5, 3.0))
+    # Each hop fires a calendar AJAX call; pace them human-like so a burst
+    # of month flips can't contribute to the site's aggressive rate limit.
+    await asyncio.sleep(random.uniform(5.0, 10.0))
     await _wait_calendar_ready(page)
     return True
 

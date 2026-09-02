@@ -143,12 +143,13 @@ class Notifier:
     def blocked(self) -> bool:
         body = (
             "usvisascheduling.com is showing a Cloudflare block page "
-            "('Sorry, you have been blocked'). Monitoring is paused and will "
-            "retry with a long backoff.\n\n"
-            "This is usually an IP-level block. Things that help:\n"
-            "  - If you are on a VPN/proxy, switch to a different exit node\n"
-            "    (or try without the VPN — the site serves China directly).\n"
-            "  - Wait; such blocks are often temporary.\n\n"
+            "('Sorry, you have been blocked' or 'Error 1015: rate limited').\n"
+            "Monitoring is paused and will retry with a long backoff.\n\n"
+            "Things that help:\n"
+            "  - Rate limit (1015): just wait — retrying too fast extends "
+            "the block. The monitor already backs off automatically.\n"
+            "  - IP block: if on a VPN/proxy, switch to a different exit node "
+            "(or try without the VPN — the site serves China directly).\n\n"
             "This alert is sent only once per blocked episode."
         ) + _footer(self._range)
         return self.send("blocked by Cloudflare", body)
