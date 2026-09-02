@@ -140,9 +140,15 @@ intervals — never a tight loop):
   sees the block page; just let it wait. Avoid manually refreshing the
   monitored tab in quick succession.
 - **Human-verification challenge ("Verify you are human")** — the monitor
-  auto-clicks the Turnstile checkbox up to 5 times; if that fails you get one
-  email with a screenshot — click the checkbox in the open Chrome window and
-  monitoring resumes automatically.
+  locates the checkbox through the widget's shadow DOM and clicks it: first
+  3 attempts with a humanized CDP pointer trail, then 3 with the REAL system
+  mouse via pyautogui (`challenge_os_click = true`; your cursor moves briefly
+  and is restored). If all 6 fail you get one email with a screenshot — click
+  the checkbox in the open Chrome window and monitoring resumes automatically.
+  For the OS-mouse clicks on macOS, grant **Accessibility** permission to the
+  terminal app running visa-ping (System Settings → Privacy & Security →
+  Accessibility), and keep the Chrome window visible (not minimized, not on
+  another Space).
 - **Stuck in waiting room / "You are now in line"** — the site is queueing
   everyone; the monitor waits passively until the queue clears (the log shows
   the estimated wait when the page states one). Do NOT refresh or navigate

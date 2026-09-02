@@ -89,6 +89,10 @@ class MonitorCfg:
     # Minimum spacing between our page loads; the site rate-limits over a
     # ~30 s window (Cloudflare error 1015), so stay above that.
     nav_min_interval_seconds: float = 35
+    # Allow clicking the human-verification checkbox with the real OS mouse
+    # (pyautogui) after humanized CDP clicks fail. Highest pass rate, but
+    # briefly moves your cursor and needs macOS Accessibility permission.
+    challenge_os_click: bool = True
     heartbeat_enabled: bool = False
     heartbeat_interval_hours: float = 6
 

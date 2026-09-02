@@ -26,8 +26,11 @@ log = logging.getLogger("visa_ping.monitor")
 BLOCKED_BACKOFF_SECONDS = 600
 
 # Auto-click attempts for the Cloudflare human-verification checkbox before
-# escalating to a human via email.
-CHALLENGE_CLICK_ATTEMPTS = 5
+# escalating to a human via email: first the humanized-CDP clicks, then
+# (when enabled and available) clicks with the real OS mouse.
+CHALLENGE_CDP_ATTEMPTS = 3
+CHALLENGE_OS_ATTEMPTS = 3
+CHALLENGE_CLICK_ATTEMPTS = CHALLENGE_CDP_ATTEMPTS + CHALLENGE_OS_ATTEMPTS
 
 
 # --- Persistent state -------------------------------------------------------
@@ -175,14 +178,22 @@ class Monitor:
                 continue
             if state is PageState.CHALLENGE:
                 if self._challenge_clicks < CHALLENGE_CLICK_ATTEMPTS:
+                    use_os = (
+                        self._cfg.monitor.challenge_os_click
+                        and self._challenge_clicks >= CHALLENGE_CDP_ATTEMPTS
+                    )
                     log.info(
                         "Human-verification challenge detected; auto-click "
-                        "attempt %d/%d",
+                        "attempt %d/%d (%s)",
                         self._challenge_clicks + 1, CHALLENGE_CLICK_ATTEMPTS,
+                        "OS mouse" if use_os else "CDP humanized",
                     )
-                    await self._session.try_click_challenge(self._challenge_clicks)
+                    await self._session.try_click_challenge(
+                        self._challenge_clicks, os_level=use_os
+                    )
                     self._challenge_clicks += 1
-                    await asyncio.sleep(random.uniform(4, 7))
+                    # Turnstile takes a few seconds to verify after a click.
+                    await asyncio.sleep(random.uniform(5, 9))
                 elif not self._challenge_alert_sent:
                     shot = await self._session.screenshot("challenge")
                     self._notifier.challenge_needs_human(shot)

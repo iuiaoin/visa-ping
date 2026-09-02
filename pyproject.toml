@@ -6,6 +6,8 @@ requires-python = ">=3.11"
 dependencies = [
     "nodriver>=0.38",
     "python-dotenv>=1.0",
+    # OS-level mouse clicks for the Cloudflare human-verification fallback
+    "pyautogui>=0.9.54",
 ]
 
 [project.optional-dependencies]

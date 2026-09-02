@@ -44,6 +44,11 @@ waiting_room_poll_seconds = 20
 # Minimum spacing between page loads we trigger. The site rate-limits over
 # a ~30 s window (Cloudflare error 1015) — keep this above 30.
 nav_min_interval_seconds = 35
+# When the human-verification checkbox resists humanized CDP clicks, also
+# try clicking with the REAL system mouse (pyautogui). Best pass rate;
+# briefly moves your cursor (then restores it) and requires macOS
+# Accessibility permission for the terminal running visa-ping.
+challenge_os_click = true
 # Optional periodic "I'm alive" email.
 heartbeat_enabled = false
 heartbeat_interval_hours = 6

@@ -244,41 +244,174 @@ class BrowserSession:
                 return PageState.UNKNOWN
             await asyncio.sleep(1)
 
-    async def try_click_challenge(self, attempt: int = 0) -> bool:
-        """Attempt to click the Cloudflare Turnstile checkbox.
+    async def _find_challenge_iframe_box(self) -> tuple[float, float, float, float] | None:
+        """Locate the Turnstile iframe and return its viewport box (x, y, w, h).
 
-        The widget's iframe sits inside a shadow root, invisible to page
-        JS — but nodriver's CDP-based select_all pierces shadow DOM. Even
-        attempts click the iframe center; odd attempts click where the
-        checkbox actually sits (left edge of the widget, vertically
-        centered). Returns True if something was clicked.
+        The widget iframe lives inside a (closed) shadow root. CSS selector
+        queries — even CDP-side ones like DOM.querySelectorAll — do NOT
+        cross shadow boundaries, so walk the pierced CDP DOM tree manually
+        (children + shadowRoots + contentDocument).
         """
         try:
-            iframes = await self.page.select_all("iframe", timeout=3)
-        except Exception:
-            iframes = []
-        target = None
-        for iframe in iframes or []:
-            attrs = " ".join(
-                str(iframe.attrs.get(k, "")) for k in ("src", "id", "class")
-            ).lower()
-            if "challenges.cloudflare.com" in attrs or "turnstile" in attrs or "cf-" in attrs:
-                target = iframe
-                break
-        if target is None:
-            log.debug("Challenge iframe not found (attempt %d)", attempt)
-            return False
+            doc = await self.page.send(cdp.dom.get_document(depth=-1, pierce=True))
+        except Exception as e:
+            log.warning("DOM snapshot failed: %s", e)
+            return None
+
+        hit: cdp.dom.Node | None = None
+
+        def walk(node: cdp.dom.Node) -> None:
+            nonlocal hit
+            if hit is not None:
+                return
+            if node.node_name == "IFRAME":
+                flat = node.attributes or []
+                attrs = dict(zip(flat[0::2], flat[1::2]))
+                blob = " ".join(str(v) for v in attrs.values()).lower()
+                if (
+                    "challenges.cloudflare.com" in blob
+                    or "turnstile" in blob
+                    or str(attrs.get("id", "")).startswith("cf-")
+                ):
+                    hit = node
+                    return
+            for child in (node.children or []) + (node.shadow_roots or []):
+                walk(child)
+            if node.content_document is not None:
+                walk(node.content_document)
+
+        walk(doc)
+        if hit is None:
+            return None
         try:
-            await self.page.activate()  # CDP mouse events need a focused tab
-            await asyncio.sleep(0.2)
-            if attempt % 2 == 0:
-                await target.mouse_click()
-            else:
-                pos = await target.get_position()
-                # Checkbox sits ~28 px from the widget's left edge.
-                await self.page.mouse_click(pos.left + 28, pos.top + pos.height / 2)
-            log.info("Clicked the human-verification checkbox (attempt %d)", attempt + 1)
+            box = await self.page.send(cdp.dom.get_box_model(backend_node_id=hit.backend_node_id))
+        except Exception as e:
+            log.warning("Box model for challenge iframe failed: %s", e)
+            return None
+        q = box.content  # quad: x1,y1 x2,y2 x3,y3 x4,y4
+        x, y = q[0], q[1]
+        return x, y, q[2] - q[0], q[5] - q[1]
+
+    async def _cdp_human_click(self, x: float, y: float) -> None:
+        """Click via CDP with a human-like approach: a curved mouse-move
+        trail, a hover pause, and realistic press/release timing. Turnstile
+        scores pointer history, so a bare synthetic click often fails."""
+        import random
+
+        sx = max(5.0, x + random.uniform(-350, -150))
+        sy = max(5.0, y + random.uniform(90, 220))
+        cx = (sx + x) / 2 + random.uniform(-80, 80)   # bezier control point
+        cy = (sy + y) / 2 + random.uniform(-50, 50)
+        steps = random.randint(16, 28)
+        for i in range(steps + 1):
+            t = i / steps
+            px = (1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t**2 * x
+            py = (1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t**2 * y
+            await self.page.send(cdp.input_.dispatch_mouse_event("mouseMoved", x=px, y=py))
+            await asyncio.sleep(random.uniform(0.008, 0.025))
+        await asyncio.sleep(random.uniform(0.15, 0.4))
+        button = cdp.input_.MouseButton.LEFT
+        await self.page.send(cdp.input_.dispatch_mouse_event(
+            "mousePressed", x=x, y=y, button=button, buttons=1, click_count=1))
+        await asyncio.sleep(random.uniform(0.06, 0.15))
+        await self.page.send(cdp.input_.dispatch_mouse_event(
+            "mouseReleased", x=x, y=y, button=button, buttons=0, click_count=1))
+
+    async def _os_level_click(self, x: float, y: float) -> bool:
+        """Click with the REAL system mouse via pyautogui — OS-level input
+        is fully trusted by the browser, giving the best pass rate.
+
+        Needs: pyautogui installed, the Chrome window visible on screen,
+        and macOS Accessibility permission for the terminal running us.
+        Briefly moves the user's cursor (and restores it afterwards).
+        """
+        try:
+            import pyautogui
+        except ImportError:
+            log.warning("pyautogui not installed; skipping OS-level click")
+            return False
+
+        import json as _json
+        import random
+        import subprocess
+
+        raw = await eval_js(self.page, """
+            JSON.stringify({sx: window.screenX, sy: window.screenY,
+                            ow: window.outerWidth, oh: window.outerHeight,
+                            iw: window.innerWidth, ih: window.innerHeight})
+        """)
+        m = _json.loads(raw)
+        # Viewport -> screen: side borders are symmetric (~0 on macOS), the
+        # remaining outer/inner height delta is the toolbar at the top.
+        side = (m["ow"] - m["iw"]) / 2
+        screen_x = m["sx"] + side + x
+        screen_y = m["sy"] + (m["oh"] - m["ih"]) - side + y
+
+        # Raise our Chrome window: activate the tab, then bring the exact
+        # bot Chrome process (by pid) frontmost so the click lands on it.
+        await self.page.activate()
+        pid = getattr(self.browser, "_process_pid", None)
+        if pid:
+            script = (
+                'tell application "System Events" to set frontmost of '
+                f"(first process whose unix id is {pid}) to true"
+            )
+            try:
+                await asyncio.to_thread(
+                    subprocess.run, ["osascript", "-e", script],
+                    check=False, capture_output=True, timeout=10,
+                )
+            except Exception as e:
+                log.warning("Could not raise Chrome window: %s", e)
+        await asyncio.sleep(0.5)
+
+        def do_click() -> None:
+            original = pyautogui.position()
+            pyautogui.moveTo(
+                screen_x + random.uniform(-2, 2), screen_y + random.uniform(-2, 2),
+                duration=random.uniform(0.35, 0.7), tween=pyautogui.easeInOutQuad,
+            )
+            pyautogui.click()
+            pyautogui.moveTo(original.x, original.y, duration=0.2)
+
+        try:
+            await asyncio.to_thread(do_click)
             return True
+        except Exception as e:
+            log.warning("OS-level click failed: %s", e)
+            return False
+
+    async def try_click_challenge(self, attempt: int = 0, os_level: bool = False) -> bool:
+        """Attempt to click the Cloudflare Turnstile checkbox.
+
+        Locates the widget through shadow DOM, then clicks the checkbox
+        position (left edge of the widget, vertically centered) — via a
+        humanized CDP pointer trail, or the real OS mouse when os_level is
+        set. Returns True if a click was actually performed.
+        """
+        box = await self._find_challenge_iframe_box()
+        if box is None:
+            log.warning("Challenge widget iframe not found in DOM (attempt %d)", attempt + 1)
+            return False
+        import random
+
+        x, y, w, h = box
+        tx = x + random.uniform(22, 34)  # checkbox sits near the left edge
+        ty = y + h / 2 + random.uniform(-4, 4)
+        try:
+            await self.page.activate()  # mouse events need a focused tab
+            await asyncio.sleep(0.2)
+            if os_level:
+                ok = await self._os_level_click(tx, ty)
+            else:
+                await self._cdp_human_click(tx, ty)
+                ok = True
+            if ok:
+                log.info(
+                    "Clicked the human-verification checkbox (%s, attempt %d)",
+                    "OS mouse" if os_level else "CDP humanized", attempt + 1,
+                )
+            return ok
         except Exception as e:
             log.warning("Challenge click failed: %s", e)
             return False
