@@ -14,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .booking import book_earliest
-from .browser import BrowserSession, LoginStrategy, PageState
+from .browser import BrowserSession, LoginStrategy, PageState, resolve_challenge
 from .config import Config
 from .notify import Notifier
 from .scraper import diff_dates, filter_in_range, scrape_available_dates, select_consulate
@@ -25,12 +25,6 @@ log = logging.getLogger("visa_ping.monitor")
 # back off much longer than for ordinary errors.
 BLOCKED_BACKOFF_SECONDS = 600
 
-# Auto-click attempts for the Cloudflare human-verification checkbox before
-# escalating to a human via email: first the humanized-CDP clicks, then
-# (when enabled and available) clicks with the real OS mouse.
-CHALLENGE_CDP_ATTEMPTS = 3
-CHALLENGE_OS_ATTEMPTS = 3
-CHALLENGE_CLICK_ATTEMPTS = CHALLENGE_CDP_ATTEMPTS + CHALLENGE_OS_ATTEMPTS
 
 
 # --- Persistent state -------------------------------------------------------
@@ -135,13 +129,15 @@ class Monitor:
         self._cycles = 0
         self._blocked_alert_sent = False  # once per blocked episode, in-memory
         self._challenge_alert_sent = False
-        self._challenge_clicks = 0  # auto-click attempts this episode
 
     def _save(self) -> None:
         save_state(self._cfg.paths.state_file, self._state)
 
     async def _handle_session_lost(self) -> None:
-        if not self._state.session_alert_sent:
+        # An auto-login strategy alerts the user itself only when human
+        # action is really needed; alerting upfront would spam them for
+        # outages that self-heal in seconds.
+        if not self._login.handles_own_alerts and not self._state.session_alert_sent:
             self._notifier.session_lost()
             self._state.session_alert_sent = True
             self._save()
@@ -158,7 +154,6 @@ class Monitor:
                 # Any block/challenge episode is over.
                 self._blocked_alert_sent = False
                 self._challenge_alert_sent = False
-                self._challenge_clicks = 0
                 return
             if state is PageState.BLOCKED:
                 log.warning(
@@ -177,24 +172,11 @@ class Monitor:
                     await self._session.goto_schedule()
                 continue
             if state is PageState.CHALLENGE:
-                if self._challenge_clicks < CHALLENGE_CLICK_ATTEMPTS:
-                    use_os = (
-                        self._cfg.monitor.challenge_os_click
-                        and self._challenge_clicks >= CHALLENGE_CDP_ATTEMPTS
-                    )
-                    log.info(
-                        "Human-verification challenge detected; auto-click "
-                        "attempt %d/%d (%s)",
-                        self._challenge_clicks + 1, CHALLENGE_CLICK_ATTEMPTS,
-                        "OS mouse" if use_os else "CDP humanized",
-                    )
-                    await self._session.try_click_challenge(
-                        self._challenge_clicks, os_level=use_os
-                    )
-                    self._challenge_clicks += 1
-                    # Turnstile takes a few seconds to verify after a click.
-                    await asyncio.sleep(random.uniform(5, 9))
-                elif not self._challenge_alert_sent:
+                if not self._challenge_alert_sent:
+                    if await resolve_challenge(
+                        self._session, self._cfg.monitor.challenge_os_click
+                    ):
+                        continue  # cleared; loop re-detects the page
                     shot = await self._session.screenshot("challenge")
                     self._notifier.challenge_needs_human(shot)
                     self._challenge_alert_sent = True
@@ -237,11 +219,16 @@ class Monitor:
         schedule page only once a logged-in session exists (a session-less
         deep link to /schedule/ gets blocked by the Cloudflare WAF)."""
         await self._session.goto_home()
+        # A fresh visit frequently hits the human-verification challenge
+        # before anything else — clear it before probing the login state.
+        if await self._session.detect_state(timeout=10) is PageState.CHALLENGE:
+            await resolve_challenge(self._session, self._cfg.monitor.challenge_os_click)
         if await self._session.is_logged_in():
             log.info("Existing session detected on the home page.")
             await self._session.goto_schedule()
         else:
-            self._log_login_instructions()
+            if not self._login.handles_own_alerts:
+                self._log_login_instructions()
             await self._login.recover(self._session)
         await self.wait_until_ready(startup=True)
 

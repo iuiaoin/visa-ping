@@ -10,7 +10,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import Config, ConfigError, EmailCreds, load_config, load_email_creds, setup_logging
+from .config import (
+    Config,
+    ConfigError,
+    EmailCreds,
+    load_config,
+    load_email_creds,
+    load_login_creds,
+    setup_logging,
+)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -33,10 +41,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _banner(cfg: Config, log) -> None:
+def _banner(cfg: Config, log, auto_login: bool) -> None:
     log.info("=" * 60)
     log.info("visa-ping effective configuration:")
     log.info("  scenario  : %s", cfg.scenario)
+    log.info("  login     : %s", "auto (credentials.toml)" if auto_login else "manual")
     log.info("  consulate : %s", cfg.consulate.guid or cfg.consulate.name)
     log.info("  date range: %s", cfg.dates.describe())
     log.info("  months    : %d", cfg.monitor.months_to_scan)
@@ -57,8 +66,15 @@ def _test_email(cfg: Config, creds: EmailCreds) -> int:
     return 0 if ok else 1
 
 
-async def _async_main(cfg: Config, creds: EmailCreds, once: bool) -> None:
-    from .browser import BrowserSession, ManualLoginStrategy, target_url_for
+async def _async_main(
+    cfg: Config, creds: EmailCreds, login_creds, once: bool
+) -> None:
+    from .browser import (
+        AutoLoginStrategy,
+        BrowserSession,
+        ManualLoginStrategy,
+        target_url_for,
+    )
     from .monitor import Monitor
     from .notify import Notifier
 
@@ -70,7 +86,15 @@ async def _async_main(cfg: Config, creds: EmailCreds, once: bool) -> None:
         target_url_for(cfg.scenario),
         nav_min_interval=cfg.monitor.nav_min_interval_seconds,
     )
-    login = ManualLoginStrategy(cfg.monitor.session_poll_seconds)
+    if login_creds is not None:
+        login = AutoLoginStrategy(
+            login_creds,
+            notifier,
+            cfg.monitor.session_poll_seconds,
+            cfg.monitor.challenge_os_click,
+        )
+    else:
+        login = ManualLoginStrategy(cfg.monitor.session_poll_seconds)
     monitor = Monitor(session, notifier, login, cfg)
 
     await session.start()
@@ -89,12 +113,13 @@ def cli(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config(args.config)
         creds = load_email_creds()
+        login_creds = load_login_creds(args.config.resolve().parent / "credentials.toml")
     except ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
     log = setup_logging(cfg.paths.log_file)
-    _banner(cfg, log)
+    _banner(cfg, log, auto_login=login_creds is not None)
 
     if args.test_email:
         return _test_email(cfg, creds)
@@ -102,7 +127,7 @@ def cli(argv: list[str] | None = None) -> int:
     import nodriver as uc
 
     try:
-        uc.loop().run_until_complete(_async_main(cfg, creds, args.once))
+        uc.loop().run_until_complete(_async_main(cfg, creds, login_creds, args.once))
     except KeyboardInterrupt:
         log.info("Interrupted — exiting.")
     return 0

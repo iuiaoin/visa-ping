@@ -7,7 +7,10 @@ with a persistent user profile so the login session survives restarts.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import random
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum, auto
@@ -15,6 +18,8 @@ from pathlib import Path
 
 import nodriver as uc
 from nodriver import cdp
+
+from .config import LoginCreds
 
 log = logging.getLogger("visa_ping.browser")
 
@@ -435,14 +440,75 @@ class BrowserSession:
                 pass
 
 
+# Auto-click attempts for the Cloudflare human-verification checkbox:
+# humanized-CDP clicks first, then (when enabled) clicks with the real OS
+# mouse. Shared by the monitor loop and the auto-login flow.
+CHALLENGE_CDP_ATTEMPTS = 3
+CHALLENGE_OS_ATTEMPTS = 3
+
+
+async def resolve_challenge(session: BrowserSession, os_click_enabled: bool) -> bool:
+    """Run the full challenge auto-click sequence; True once it clears."""
+    total = CHALLENGE_CDP_ATTEMPTS + (CHALLENGE_OS_ATTEMPTS if os_click_enabled else 0)
+    for attempt in range(total):
+        use_os = attempt >= CHALLENGE_CDP_ATTEMPTS
+        log.info(
+            "Challenge auto-click attempt %d/%d (%s)",
+            attempt + 1, total, "OS mouse" if use_os else "CDP humanized",
+        )
+        await session.try_click_challenge(attempt, os_level=use_os)
+        # Turnstile takes a few seconds to verify after a click.
+        await asyncio.sleep(random.uniform(5, 9))
+        if await session.detect_state(timeout=5) is not PageState.CHALLENGE:
+            log.info("Challenge cleared.")
+            return True
+    return False
+
+
+def match_kba_answer(label_text: str, qa_pairs: tuple[tuple[str, str], ...]) -> str | None:
+    """Match an on-screen security-question label to a configured answer.
+
+    Comparison is case-, whitespace- and punctuation-insensitive, and a
+    substring in either direction counts (labels often carry decorations
+    like a trailing '*' or embedded numbering).
+    """
+
+    def norm(s: str) -> str:
+        return re.sub(r"[^0-9a-z一-鿿]", "", s.lower())
+
+    target = norm(label_text)
+    if not target:
+        return None
+    for question, answer in qa_pairs:
+        q = norm(question)
+        if q and (q in target or target in q):
+            return answer
+    return None
+
+
+async def type_slowly(element, text: str) -> None:
+    """Focus a field and type with human-like per-character delays."""
+    await element.click()
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+    try:
+        await element.apply('(el) => { el.value = ""; }')
+    except Exception:
+        pass
+    for ch in text:
+        await element.send_keys(ch)
+        await asyncio.sleep(random.uniform(0.03, 0.12))
+
+
 class LoginStrategy(ABC):
     """Pluggable session-recovery strategy.
 
-    The monitor calls recover() after it has detected session loss (and sent
-    its one-time alert). An automated implementation (credential fill + LLM
-    captcha OCR against the B2C form) can be added later without touching
-    the monitor loop.
+    The monitor calls recover() when it detects session loss. Strategies
+    with handles_own_alerts=True email the user themselves (only when human
+    action is actually needed); for the others the monitor sends its
+    session-lost alert before calling recover().
     """
+
+    handles_own_alerts = False
 
     @abstractmethod
     async def recover(self, session: BrowserSession) -> bool:
@@ -474,3 +540,203 @@ class ManualLoginStrategy(LoginStrategy):
                 await session.goto_schedule()
                 continue
             await asyncio.sleep(self._poll_seconds)
+
+
+# JS probes for the auto-login flow. B2C pre-renders hidden error
+# containers, so error text only counts when the element is visible.
+_JS_CLICK_SIGNIN_LINK = """
+(function() {
+  let a = document.querySelector("a[href*='signin' i], a[href*='sign-in' i]");
+  if (!a) {
+    a = [...document.querySelectorAll('a')]
+      .find(x => /登录|sign\\s*in/i.test((x.textContent || '').trim()));
+  }
+  if (a) { a.click(); return true; }
+  return false;
+})()
+"""
+
+_JS_VISIBLE_ERROR = """
+(function() {
+  const texts = [...document.querySelectorAll("[role=alert], .error, .alert-danger")]
+    .filter(el => el.offsetParent !== null)
+    .map(el => (el.textContent || '').trim())
+    .filter(Boolean);
+  return texts.length ? texts.join(' | ') : null;
+})()
+"""
+
+# The answer input's own <label> is empty; the question lives in a
+# SEPARATE preceding <li> as <p class="textInParagraph"> (its id is
+# inconsistent: kbq1ReadOnly, kbq2bReadOnly, ...). Pair each answer input
+# with the nearest question paragraph before it in DOM order.
+_JS_READ_KBA_QUESTIONS = """
+JSON.stringify([...document.querySelectorAll("input[id^='kba'][id$='_response']")]
+  .filter(inp => inp.offsetParent !== null)
+  .map(inp => {
+    let q = '';
+    const li = inp.closest('li');
+    let prev = li ? li.previousElementSibling : null;
+    while (prev) {
+      if (prev.querySelector("input[id^='kba'][id$='_response']")) break;
+      const p = prev.querySelector('.textInParagraph, p[aria-label]');
+      if (p) { q = (p.textContent || p.getAttribute('aria-label') || '').trim(); break; }
+      prev = prev.previousElementSibling;
+    }
+    if (!q) {
+      const lbl = document.querySelector("label[for='" + inp.id + "']");
+      if (lbl) q = (lbl.textContent || '').trim();
+    }
+    return {id: inp.id, question: q};
+  }))
+"""
+
+
+class AutoLoginStrategy(LoginStrategy):
+    """Log in automatically with configured credentials; fall back to
+    manual (with one email alert) when automation fails.
+
+    Flow per attempt: clear any Cloudflare challenge -> click the sign-in
+    link on the home page -> B2C screen 1 (#signInName/#password) -> B2C
+    screen 2 (a random 2 of 3 security questions, matched against the
+    on-screen label text) -> schedule page.
+    """
+
+    handles_own_alerts = True
+
+    def __init__(
+        self,
+        creds: LoginCreds,
+        notifier,
+        poll_seconds: float,
+        os_click_enabled: bool,
+        max_attempts: int = 2,
+        attempt_timeout: float = 240,
+    ):
+        self._creds = creds
+        self._notifier = notifier
+        self._os_click = os_click_enabled
+        self._max_attempts = max_attempts
+        self._attempt_timeout = attempt_timeout
+        self._manual = ManualLoginStrategy(poll_seconds)
+
+    async def recover(self, session: BrowserSession) -> bool:
+        for attempt in range(1, self._max_attempts + 1):
+            log.info("Auto-login attempt %d/%d", attempt, self._max_attempts)
+            try:
+                if await self._attempt(session):
+                    log.info("Auto-login succeeded.")
+                    return True
+            except Exception:
+                log.exception("Auto-login attempt %d crashed", attempt)
+            log.warning("Auto-login attempt %d/%d failed", attempt, self._max_attempts)
+        shot = await session.screenshot("auto-login-failed")
+        self._notifier.auto_login_failed(shot)
+        log.warning("Falling back to MANUAL login — see the alert email.")
+        return await self._manual.recover(session)
+
+    async def _attempt(self, session: BrowserSession) -> bool:
+        deadline = asyncio.get_running_loop().time() + self._attempt_timeout
+        filled_credentials = False
+        filled_kba = False
+        while asyncio.get_running_loop().time() < deadline:
+            state = await session.detect_state(timeout=5)
+            if state is PageState.READY:
+                return True
+            if state is PageState.CHALLENGE:
+                if not await resolve_challenge(session, self._os_click):
+                    log.warning("Challenge did not clear during auto-login")
+                    return False
+                continue
+            if state is PageState.BLOCKED:
+                log.warning("Blocked page during auto-login")
+                return False
+
+            # B2C screen 1: credentials.
+            if await eval_js(session.page, "!!document.querySelector('#signInName')"):
+                error = await eval_js(session.page, _JS_VISIBLE_ERROR)
+                if error:
+                    log.error("Login page error: %s", error)
+                    return False
+                if filled_credentials:
+                    await asyncio.sleep(2)  # submitted; wait for transition
+                    continue
+                await self._fill_credentials(session)
+                filled_credentials = True
+                continue
+
+            # B2C screen 2: security questions (2 of 3 rendered).
+            kba = await self._read_kba(session)
+            if kba:
+                error = await eval_js(session.page, _JS_VISIBLE_ERROR)
+                if error:
+                    log.error("Security-question page error: %s", error)
+                    return False
+                if filled_kba:
+                    await asyncio.sleep(2)
+                    continue
+                if not await self._fill_kba(session, kba):
+                    return False
+                filled_kba = True
+                continue
+
+            # Logged in but somewhere else -> go to the schedule page.
+            if await session.is_logged_in():
+                log.info("Logged in — navigating to the schedule page...")
+                await session.goto_schedule()
+                continue
+
+            # Logged-out home page -> click the sign-in link.
+            if await eval_js(session.page, _JS_CLICK_SIGNIN_LINK):
+                log.info("Clicked the sign-in link")
+                await asyncio.sleep(random.uniform(3, 5))
+                continue
+
+            await asyncio.sleep(2)
+        log.warning("Auto-login attempt timed out after %.0f s", self._attempt_timeout)
+        return False
+
+    async def _fill_credentials(self, session: BrowserSession) -> None:
+        log.info("Filling username/password...")
+        page = session.page
+        user_el = await page.select("#signInName", timeout=10)
+        await type_slowly(user_el, self._creds.username)
+        pass_el = await page.select("#password", timeout=10)
+        await type_slowly(pass_el, self._creds.password)
+        await asyncio.sleep(random.uniform(0.5, 1.2))
+        await eval_js(page, "document.querySelector('#continue')?.click()")
+        log.info("Submitted credentials")
+        await asyncio.sleep(random.uniform(2, 4))
+
+    async def _read_kba(self, session: BrowserSession) -> list[dict]:
+        raw = await eval_js(session.page, _JS_READ_KBA_QUESTIONS)
+        try:
+            return json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            return []
+
+    async def _fill_kba(self, session: BrowserSession, kba: list[dict]) -> bool:
+        # The two questions can render with a short stagger; give the page
+        # a moment and re-read so we fill both in one pass.
+        if len(kba) < 2:
+            await asyncio.sleep(3)
+            kba = await self._read_kba(session) or kba
+        page = session.page
+        for item in kba:
+            question = item.get("question") or ""
+            answer = match_kba_answer(question, self._creds.security_questions)
+            if answer is None:
+                log.error(
+                    "No configured answer matches security question %r — "
+                    "add it to credentials.toml exactly as displayed",
+                    question,
+                )
+                return False
+            el = await page.select(f"#{item['id']}", timeout=10)
+            log.info("Answering security question: %s", question[:60])
+            await type_slowly(el, answer)
+            await asyncio.sleep(random.uniform(0.4, 1.0))
+        await eval_js(page, "document.querySelector('#continue')?.click()")
+        log.info("Submitted security answers")
+        await asyncio.sleep(random.uniform(2, 4))
+        return True

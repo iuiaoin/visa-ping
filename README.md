@@ -73,15 +73,37 @@ uv run visa-ping --once       # one supervised check cycle, then exit
 ```
 
 First run: Chrome opens on the **home page** (deep-linking to `/schedule/`
-without a session trips the Cloudflare WAF) → log in manually (username,
-password, captcha, security questions) → once a logged-in session is detected
-the program navigates to the schedule/reschedule page itself and monitoring
-starts. The Chrome profile is stored in `chrome_profile/`, so subsequent runs
-usually skip the login entirely.
+without a session trips the Cloudflare WAF). With auto-login configured (see
+below) the whole login — Cloudflare checkbox, username/password, security
+questions — happens unattended; otherwise log in manually and the program
+takes over once the schedule page is detected. The Chrome profile is stored
+in `chrome_profile/`, so subsequent runs usually skip the login entirely.
 
 If the program keeps printing "Waiting for manual login" even though you have
 logged in, just open the schedule page manually in that same tab — it detects
 the ready page directly and proceeds.
+
+## Auto-login
+
+```bash
+cp credentials.example.toml credentials.toml
+chmod 600 credentials.toml    # keep it private
+# fill in username, password, and ALL THREE security questions
+```
+
+- If `credentials.toml` exists, `uv run visa-ping` logs in automatically —
+  including after mid-run session expiry, with no alert email unless
+  automation fails. Delete the file to return to manual-only login.
+- The site asks a random 2 of your 3 security questions each login. Copy the
+  questions into the file **exactly as the login page displays them** — they
+  are matched against the on-screen text (case/whitespace/punctuation-
+  insensitive substring, so a trailing `*` or numbering is fine).
+- After 2 failed attempts you get one `automatic login failed` email with a
+  screenshot, and the monitor waits for you to log in manually in the open
+  window. Check `logs/visa-ping.log` for the reason — e.g. an unmatched
+  security question is logged verbatim so you can add it to the file.
+- Wrong-password errors are never retried beyond those 2 attempts, to avoid
+  account lockout.
 
 ### What the emails mean
 

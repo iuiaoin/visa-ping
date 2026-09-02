@@ -31,6 +31,16 @@ class EmailCreds:
 
 
 @dataclass(frozen=True)
+class LoginCreds:
+    """Site login credentials for auto-login (from credentials.toml)."""
+
+    username: str
+    password: str
+    # (question as displayed on the login page, answer) pairs
+    security_questions: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class ConsulateCfg:
     name: str | None
     guid: str | None
@@ -166,6 +176,55 @@ def _as_bound(value: object, key: str, errors: list[str]) -> DateBound:
         f"(\"today\", \"today+N\"), got: {value!r}"
     )
     return DateBound(fixed=date.today())  # placeholder; errors will abort anyway
+
+
+def load_login_creds(path: Path) -> LoginCreds | None:
+    """Load credentials.toml if present; None means manual-login mode."""
+    if not path.is_file():
+        return None
+    # Credentials should not be readable by other users.
+    try:
+        if path.stat().st_mode & 0o077:
+            log = logging.getLogger("visa_ping")
+            log.warning("%s is readable by other users — run: chmod 600 %s", path.name, path)
+    except OSError:
+        pass
+    with open(path, "rb") as f:
+        try:
+            raw = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"Failed to parse {path}: {e}") from e
+
+    errors: list[str] = []
+    username = str(raw.get("username", "")).strip()
+    password = str(raw.get("password", ""))
+    if not username or username == "your-login-email":
+        errors.append("`username` is not set")
+    if not password or password == "your-password":
+        errors.append("`password` is not set")
+
+    questions: list[tuple[str, str]] = []
+    for i, entry in enumerate(raw.get("security_questions", []), start=1):
+        q = str(entry.get("question", "")).strip()
+        a = str(entry.get("answer", "")).strip()
+        if not q or not a or a == "...":
+            errors.append(f"security_questions[{i}] needs both `question` and `answer`")
+        else:
+            questions.append((q, a))
+    if len(questions) < 2 and not errors:
+        errors.append(
+            "at least 2 security_questions required (the site asks a random "
+            "2 of your 3 — configure all 3 to be safe)"
+        )
+    if errors:
+        raise ConfigError(f"Invalid {path}:\n- " + "\n- ".join(errors))
+    if len(questions) < 3:
+        logging.getLogger("visa_ping").warning(
+            "Only %d security questions configured; the site asks a random "
+            "2 of 3, so auto-login may fail when the missing one comes up.",
+            len(questions),
+        )
+    return LoginCreds(username=username, password=password, security_questions=tuple(questions))
 
 
 def load_config(config_path: Path) -> Config:

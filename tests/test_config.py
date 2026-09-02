@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from visa_ping.config import ConfigError, DateBound, load_config, load_email_creds
+from visa_ping.config import (
+    ConfigError,
+    DateBound,
+    load_config,
+    load_email_creds,
+    load_login_creds,
+)
 
 FUTURE = (date.today() + timedelta(days=200)).isoformat()
 NEAR = (date.today() + timedelta(days=30)).isoformat()
@@ -151,6 +157,52 @@ def test_unknown_monitor_key(tmp_path):
     bad = VALID + "\n[monitor]\nbogus_key = 1\n"
     with pytest.raises(ConfigError, match="unknown or invalid"):
         load_config(write(tmp_path, bad))
+
+
+VALID_CREDS = """
+username = "me@example.com"
+password = "hunter2"
+[[security_questions]]
+question = "你母亲的姓名"
+answer = "mom"
+[[security_questions]]
+question = "第一只宠物的名字"
+answer = "cat"
+[[security_questions]]
+question = "出生的城市"
+answer = "wuhan"
+"""
+
+
+def test_login_creds_valid(tmp_path):
+    p = tmp_path / "credentials.toml"
+    p.write_text(VALID_CREDS, encoding="utf-8")
+    creds = load_login_creds(p)
+    assert creds.username == "me@example.com"
+    assert len(creds.security_questions) == 3
+    assert creds.security_questions[0] == ("你母亲的姓名", "mom")
+
+
+def test_login_creds_missing_file(tmp_path):
+    assert load_login_creds(tmp_path / "nope.toml") is None
+
+
+def test_login_creds_placeholder_rejected(tmp_path):
+    p = tmp_path / "credentials.toml"
+    p.write_text('username = "your-login-email"\npassword = "x"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="username"):
+        load_login_creds(p)
+
+
+def test_login_creds_too_few_questions(tmp_path):
+    p = tmp_path / "credentials.toml"
+    p.write_text(
+        'username = "a@b.c"\npassword = "x"\n'
+        '[[security_questions]]\nquestion = "q1"\nanswer = "a1"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="at least 2"):
+        load_login_creds(p)
 
 
 def test_email_creds(tmp_path, monkeypatch):

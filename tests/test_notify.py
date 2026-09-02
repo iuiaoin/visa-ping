@@ -91,6 +91,14 @@ def test_booking_result_email_real_unverified():
     assert "CHECK THE OFFICIAL SITE NOW" in body
 
 
+def test_auto_login_failed_email():
+    n = make_notifier()
+    assert n.auto_login_failed(screenshot=b"\x89PNG fake")
+    subject, body = last_message()
+    assert "automatic login failed" in subject
+    assert "credentials.toml" in body
+
+
 def test_challenge_needs_human_email():
     n = make_notifier()
     assert n.challenge_needs_human(screenshot=b"\x89PNG fake")

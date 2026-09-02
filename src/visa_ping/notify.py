@@ -172,6 +172,21 @@ class Notifier:
             png_attachment=screenshot,
         )
 
+    def auto_login_failed(self, screenshot: bytes | None = None) -> bool:
+        body = (
+            "Automatic login to usvisascheduling.com FAILED after all "
+            "attempts (see the attached screenshot for where it stopped).\n\n"
+            "What to do:\n"
+            "  1. Go to the machine running visa-ping.\n"
+            "  2. Complete the login manually in the open Chrome window.\n\n"
+            "Monitoring resumes automatically once the schedule page is "
+            "detected. Check logs/visa-ping.log for the failure reason "
+            "(e.g. an unmatched security question to add to credentials.toml)."
+        ) + _footer(self._range)
+        return self.send(
+            "ACTION REQUIRED: automatic login failed", body, png_attachment=screenshot
+        )
+
     def session_lost(self) -> bool:
         return self.send("ACTION REQUIRED: session expired", render_session_lost_body(self._range))
 

@@ -1,6 +1,7 @@
 # Secrets
 .env
 config.toml
+credentials.toml
 
 # Runtime artifacts
 chrome_profile/
