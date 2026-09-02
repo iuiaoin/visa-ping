@@ -139,8 +139,14 @@ intervals — never a tight loop):
   `nav_min_interval_seconds` (35 s) apart and backs off 10 minutes when it
   sees the block page; just let it wait. Avoid manually refreshing the
   monitored tab in quick succession.
-- **Stuck in waiting room** — the site is queueing everyone; the monitor polls
-  until it passes. Nothing to do.
+- **Human-verification challenge ("Verify you are human")** — the monitor
+  auto-clicks the Turnstile checkbox up to 5 times; if that fails you get one
+  email with a screenshot — click the checkbox in the open Chrome window and
+  monitoring resumes automatically.
+- **Stuck in waiting room / "You are now in line"** — the site is queueing
+  everyone; the monitor waits passively until the queue clears (the log shows
+  the estimated wait when the page states one). Do NOT refresh or navigate
+  that tab manually — the queue page holds your place and advances itself.
 - **Emails not arriving** — run `--test-email`; check `logs/visa-ping.log`.
   Gmail SMTP from mainland China may need a proxy.
 - **Calendar never renders** — the site markup may have changed; check the

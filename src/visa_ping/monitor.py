@@ -25,6 +25,10 @@ log = logging.getLogger("visa_ping.monitor")
 # back off much longer than for ordinary errors.
 BLOCKED_BACKOFF_SECONDS = 600
 
+# Auto-click attempts for the Cloudflare human-verification checkbox before
+# escalating to a human via email.
+CHALLENGE_CLICK_ATTEMPTS = 5
+
 
 # --- Persistent state -------------------------------------------------------
 
@@ -127,6 +131,8 @@ class Monitor:
         self._started_at = datetime.now()
         self._cycles = 0
         self._blocked_alert_sent = False  # once per blocked episode, in-memory
+        self._challenge_alert_sent = False
+        self._challenge_clicks = 0  # auto-click attempts this episode
 
     def _save(self) -> None:
         save_state(self._cfg.paths.state_file, self._state)
@@ -146,7 +152,10 @@ class Monitor:
         while True:
             state = await self._session.detect_state()
             if state is PageState.READY:
-                self._blocked_alert_sent = False  # blocked episode is over
+                # Any block/challenge episode is over.
+                self._blocked_alert_sent = False
+                self._challenge_alert_sent = False
+                self._challenge_clicks = 0
                 return
             if state is PageState.BLOCKED:
                 log.warning(
@@ -164,9 +173,29 @@ class Monitor:
                 if await self._session.is_logged_in():
                     await self._session.goto_schedule()
                 continue
+            if state is PageState.CHALLENGE:
+                if self._challenge_clicks < CHALLENGE_CLICK_ATTEMPTS:
+                    log.info(
+                        "Human-verification challenge detected; auto-click "
+                        "attempt %d/%d",
+                        self._challenge_clicks + 1, CHALLENGE_CLICK_ATTEMPTS,
+                    )
+                    await self._session.try_click_challenge(self._challenge_clicks)
+                    self._challenge_clicks += 1
+                    await asyncio.sleep(random.uniform(4, 7))
+                elif not self._challenge_alert_sent:
+                    shot = await self._session.screenshot("challenge")
+                    self._notifier.challenge_needs_human(shot)
+                    self._challenge_alert_sent = True
+                else:
+                    # Human takes over from here; just watch passively.
+                    await asyncio.sleep(self._cfg.monitor.session_poll_seconds)
+                continue
             if state is PageState.WAITING_ROOM:
                 log.info(
-                    "In the site's waiting room; re-checking in %.0f s",
+                    "Waiting in line (%s); re-checking in %.0f s — never "
+                    "navigating, the queue page holds our spot",
+                    self._session.queue_status or "unknown wait",
                     self._cfg.monitor.waiting_room_poll_seconds,
                 )
                 await asyncio.sleep(self._cfg.monitor.waiting_room_poll_seconds)

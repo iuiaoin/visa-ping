@@ -50,23 +50,57 @@ async def eval_js(page: "uc.Tab", js: str):
 class PageState(Enum):
     READY = auto()           # schedule page usable (#post_select present)
     LOGIN_REQUIRED = auto()  # B2C login page or a password field is showing
-    WAITING_ROOM = auto()    # site parked us in its high-traffic waiting room
-    BLOCKED = auto()         # Cloudflare WAF block / challenge page
+    WAITING_ROOM = auto()    # queue / waiting-room page holding our spot
+    CHALLENGE = auto()       # Cloudflare human-verification (Turnstile checkbox)
+    BLOCKED = auto()         # Cloudflare hard block / rate limit (1015)
     UNKNOWN = auto()         # nothing recognizable within the timeout
 
 
-# Cloudflare block/challenge/rate-limit fingerprints (title or body text).
-# Error 1015 ("You are being rate limited") is common here: the site rate-
-# limits page loads over roughly a 30-second window.
-_JS_CF_BLOCKED = """
+# Hard Cloudflare block/rate-limit fingerprints. Error 1015 ("You are being
+# rate limited") is common here: the site rate-limits page loads over
+# roughly a 30-second window. Checked BEFORE the challenge fingerprints —
+# block pages can carry Cloudflare scripts too.
+_JS_CF_HARD_BLOCK = """
 (function() {
   const title = document.title || '';
-  if (title.includes('Attention Required!') || title.includes('Just a moment')) return true;
+  if (title.includes('Attention Required!')) return true;
   const body = document.body ? (document.body.innerText || '') : '';
   return body.includes('you have been blocked')
-      || body.includes('Checking your browser')
       || body.includes('Error 1015')
       || body.includes('being rate limited');
+})()
+"""
+
+# Interactive Cloudflare challenge (Turnstile "Verify you are human"
+# checkbox on a "Just a moment..." interstitial). Unlike a hard block this
+# is recoverable by clicking the checkbox.
+_JS_CF_CHALLENGE = """
+(function() {
+  const title = document.title || '';
+  if (title.includes('Just a moment')) return true;
+  const srcs = [...document.querySelectorAll('script[src]')].map(s => s.src);
+  return srcs.some(s => s.includes('cdn-cgi/challenge-platform')
+                     || s.includes('turnstile/v0/api.js')
+                     || s.includes('challenges.cloudflare.com'));
+})()
+"""
+
+# Queue / waiting-room pages: the site's own image-based waiting room, or a
+# text-based "You are now in line, estimated time N minutes" page. These
+# auto-advance and hold our place — NEVER navigate away from them.
+# Returns null when not queued, else a status string for logging.
+_JS_WAITING_ROOM = """
+(function() {
+  const style = document.body ? (document.body.getAttribute('style') || '') : '';
+  const body = document.body ? (document.body.innerText || '') : '';
+  const title = document.title || '';
+  const queued = style.includes('waiting_room_background')
+      || /now (?:wait(?:ing)? )?in line/i.test(body)
+      || /estimated (?:wait(?:ing)? )?time/i.test(body)
+      || title.includes('Waiting Room');
+  if (!queued) return null;
+  const m = body.match(/estimated[^0-9]{0,40}(\\d+)\\s*min/i);
+  return m ? ('~' + m[1] + ' min') : 'unknown wait';
 })()
 """
 
@@ -99,6 +133,7 @@ class BrowserSession:
         self._last_nav: float | None = None
         self.browser: uc.Browser | None = None
         self.page: uc.Tab | None = None
+        self.queue_status: str | None = None  # set when WAITING_ROOM detected
 
     async def start(self, attempts: int = 3) -> None:
         self._profile_dir.mkdir(parents=True, exist_ok=True)
@@ -172,16 +207,30 @@ class BrowserSession:
     async def detect_state(self, timeout: float = 30) -> PageState:
         """Classify the current page, waiting up to `timeout` for READY."""
         deadline = asyncio.get_running_loop().time() + timeout
+        self.queue_status = None  # populated when WAITING_ROOM is detected
         while True:
             url = await self._eval("location.href") or ""
             if "b2clogin.com" in url:
                 return PageState.LOGIN_REQUIRED
 
-            if await self._eval(_JS_CF_BLOCKED):
+            # Don't classify a half-parsed document: head scripts appear
+            # before body text, which would misread e.g. a 1015 block page
+            # (body not yet parsed) as a challenge (scripts already visible).
+            if await self._eval("document.readyState") == "loading":
+                if asyncio.get_running_loop().time() > deadline:
+                    return PageState.UNKNOWN
+                await asyncio.sleep(0.5)
+                continue
+
+            if await self._eval(_JS_CF_HARD_BLOCK):
                 return PageState.BLOCKED
 
-            style = await self._eval("document.body && document.body.getAttribute('style')")
-            if style and "waiting_room_background" in style:
+            if await self._eval(_JS_CF_CHALLENGE):
+                return PageState.CHALLENGE
+
+            queue_status = await self._eval(_JS_WAITING_ROOM)
+            if queue_status:
+                self.queue_status = queue_status
                 return PageState.WAITING_ROOM
 
             if await self._eval("!!document.querySelector('input[type=password]')"):
@@ -194,6 +243,45 @@ class BrowserSession:
                 log.warning("detect_state timed out; current URL: %s", url)
                 return PageState.UNKNOWN
             await asyncio.sleep(1)
+
+    async def try_click_challenge(self, attempt: int = 0) -> bool:
+        """Attempt to click the Cloudflare Turnstile checkbox.
+
+        The widget's iframe sits inside a shadow root, invisible to page
+        JS — but nodriver's CDP-based select_all pierces shadow DOM. Even
+        attempts click the iframe center; odd attempts click where the
+        checkbox actually sits (left edge of the widget, vertically
+        centered). Returns True if something was clicked.
+        """
+        try:
+            iframes = await self.page.select_all("iframe", timeout=3)
+        except Exception:
+            iframes = []
+        target = None
+        for iframe in iframes or []:
+            attrs = " ".join(
+                str(iframe.attrs.get(k, "")) for k in ("src", "id", "class")
+            ).lower()
+            if "challenges.cloudflare.com" in attrs or "turnstile" in attrs or "cf-" in attrs:
+                target = iframe
+                break
+        if target is None:
+            log.debug("Challenge iframe not found (attempt %d)", attempt)
+            return False
+        try:
+            await self.page.activate()  # CDP mouse events need a focused tab
+            await asyncio.sleep(0.2)
+            if attempt % 2 == 0:
+                await target.mouse_click()
+            else:
+                pos = await target.get_position()
+                # Checkbox sits ~28 px from the widget's left edge.
+                await self.page.mouse_click(pos.left + 28, pos.top + pos.height / 2)
+            log.info("Clicked the human-verification checkbox (attempt %d)", attempt + 1)
+            return True
+        except Exception as e:
+            log.warning("Challenge click failed: %s", e)
+            return False
 
     async def screenshot(self, tag: str = "page") -> bytes | None:
         """Save a screenshot to the screenshots dir and return its bytes."""

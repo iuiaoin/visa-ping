@@ -91,6 +91,17 @@ def test_booking_result_email_real_unverified():
     assert "CHECK THE OFFICIAL SITE NOW" in body
 
 
+def test_challenge_needs_human_email():
+    n = make_notifier()
+    assert n.challenge_needs_human(screenshot=b"\x89PNG fake")
+    subject, body = last_message()
+    assert "ACTION REQUIRED" in subject
+    assert "checkbox" in body
+    # screenshot attached as a second MIME part
+    raw = FakeSMTP.sent[-1][2]
+    assert "image/png" in raw
+
+
 def test_booking_result_email_dry_run():
     n = make_notifier()
     result = BookingResult(attempted=True, booked_date=date(2026, 10, 3), booked_time="09:15")

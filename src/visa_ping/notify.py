@@ -154,6 +154,24 @@ class Notifier:
         ) + _footer(self._range)
         return self.send("blocked by Cloudflare", body)
 
+    def challenge_needs_human(self, screenshot: bytes | None = None) -> bool:
+        body = (
+            "usvisascheduling.com is showing a Cloudflare human-verification "
+            "challenge ('Verify you are human' checkbox) and the automatic "
+            "click attempts did not get through.\n\n"
+            "What to do:\n"
+            "  1. Go to the machine running visa-ping.\n"
+            "  2. In the open Chrome window, click the verification checkbox\n"
+            "     (\"Verify you are human\" / \"确认您是真人\").\n\n"
+            "Monitoring resumes automatically once the page unblocks.\n"
+            "This alert is sent only once per challenge episode."
+        ) + _footer(self._range)
+        return self.send(
+            "ACTION REQUIRED: click the human-verification checkbox",
+            body,
+            png_attachment=screenshot,
+        )
+
     def session_lost(self) -> bool:
         return self.send("ACTION REQUIRED: session expired", render_session_lost_body(self._range))
 
