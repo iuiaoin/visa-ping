@@ -111,7 +111,6 @@ chmod 600 credentials.toml    # keep it private
 |---|---|
 | `... N in-range date(s) available!` | New dates in your range (with +/− diff and full lists) |
 | `... ACTION REQUIRED: session expired` | Go log in again in the open Chrome window (sent once per outage) |
-| `... session recovered` | Monitoring resumed |
 | `... BOOKED / DRY-RUN / BOOKING FAILED` | Booking outcome, screenshot attached |
 | `... heartbeat` | Periodic liveness report (if enabled) |
 

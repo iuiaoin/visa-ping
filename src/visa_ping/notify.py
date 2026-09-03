@@ -64,10 +64,6 @@ def render_session_lost_body(date_range: DateRangeCfg) -> str:
     ) + _footer(date_range)
 
 
-def render_session_recovered_body(date_range: DateRangeCfg) -> str:
-    return "Session restored — monitoring has resumed." + _footer(date_range)
-
-
 def render_heartbeat_body(
     started_at: datetime,
     cycles: int,
@@ -189,9 +185,6 @@ class Notifier:
 
     def session_lost(self) -> bool:
         return self.send("ACTION REQUIRED: session expired", render_session_lost_body(self._range))
-
-    def session_recovered(self) -> bool:
-        return self.send("session recovered", render_session_recovered_body(self._range))
 
     def booking_result(self, result, dry_run: bool) -> bool:
         # `result` is a booking.BookingResult; imported lazily to avoid a cycle.

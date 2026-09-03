@@ -142,7 +142,8 @@ class Monitor:
             self._state.session_alert_sent = True
             self._save()
         await self._login.recover(self._session)
-        self._notifier.session_recovered()
+        # No email on recovery (user preference) — the log suffices.
+        log.info("Session recovered; monitoring resumes.")
         self._state.session_alert_sent = False
         self._save()
 
