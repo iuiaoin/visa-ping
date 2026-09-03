@@ -36,15 +36,19 @@ def target_url_for(scenario: str) -> str:
     return SCHEDULE_URL if scenario == "schedule" else RESCHEDULE_URL
 
 
-async def eval_js(page: "uc.Tab", js: str):
+async def eval_js(page: "uc.Tab", js: str, timeout: float = 15):
     """Evaluate JS returning a plain Python value.
 
     nodriver's Tab.evaluate(return_by_value=True) leaks the raw RemoteObject
     when the JS result is falsy (null/false/""/0), and returns an
     ExceptionDetails object on JS errors — unwrap both here so callers can
     rely on ordinary Python truthiness.
+
+    The timeout is a safety net: a modal JS dialog (or a wedged renderer)
+    parks the page's main thread and Runtime.evaluate never returns — this
+    turns an indefinite hang into an error the monitor's backoff handles.
     """
-    result = await page.evaluate(js, return_by_value=True)
+    result = await asyncio.wait_for(page.evaluate(js, return_by_value=True), timeout)
     if isinstance(result, cdp.runtime.ExceptionDetails):
         raise RuntimeError(f"JS evaluation error: {result.text} ({js[:80]}...)")
     if isinstance(result, cdp.runtime.RemoteObject):
@@ -179,10 +183,36 @@ class BrowserSession:
                 await asyncio.sleep(wait)
         if self.page is None:
             self.page = await self.browser.get(url)
+            await self._install_dialog_guard()
         else:
             await self.page.get(url)
         self._last_nav = asyncio.get_running_loop().time()
         await asyncio.sleep(2)  # let the navigation settle
+
+    async def _install_dialog_guard(self) -> None:
+        """Auto-dismiss native JS dialogs (alert/confirm/prompt).
+
+        A modal dialog parks the renderer's main thread, which freezes
+        every Runtime.evaluate — without this the monitor hangs until a
+        human clicks OK (observed with the site's alert('error occurred')).
+        """
+        page = self.page
+
+        async def on_dialog(event: cdp.page.JavascriptDialogOpening, _conn=None) -> None:
+            log.warning(
+                "Auto-dismissing page dialog (%s): %s",
+                event.type_, (event.message or "")[:200],
+            )
+            try:
+                await page.send(cdp.page.handle_java_script_dialog(accept=True))
+            except Exception as e:
+                log.error("Failed to dismiss the dialog: %s", e)
+
+        page.add_handler(cdp.page.JavascriptDialogOpening, on_dialog)
+        try:
+            await page.send(cdp.page.enable())
+        except Exception as e:
+            log.warning("Could not enable Page events for the dialog guard: %s", e)
 
     async def goto_home(self) -> None:
         """Open the site home page (safe to load without a session)."""

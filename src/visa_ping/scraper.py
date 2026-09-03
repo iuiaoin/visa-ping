@@ -87,10 +87,17 @@ async def select_consulate(page, cfg: ConsulateCfg) -> tuple[str, str]:
     Options are read dynamically so consulates whose GUIDs we don't know
     (e.g. Guangzhou/Beijing) still work via name matching.
     """
-    options = await _eval_json(page, _JS_LIST_OPTIONS)
-    options = [o for o in options if o.get("value")]  # drop placeholder entries
-    if not options:
-        raise ScrapeError("#post_select has no options — page not fully loaded?")
+    # The <select> renders before its options arrive via AJAX, so READY can
+    # fire during that window — wait for real options instead of failing.
+    deadline = asyncio.get_running_loop().time() + 30
+    while True:
+        options = await _eval_json(page, _JS_LIST_OPTIONS)
+        options = [o for o in options if o.get("value")]  # drop placeholders
+        if options:
+            break
+        if asyncio.get_running_loop().time() > deadline:
+            raise ScrapeError("#post_select still has no options after 30 s")
+        await asyncio.sleep(1)
 
     if cfg.guid:
         matches = [o for o in options if o["value"].lower() == cfg.guid.lower()]
